@@ -1,0 +1,443 @@
+= Mapper
+
+== Beskrivning
+Denna modulen gör det enklare att hantera byggandet av en model. Detta genom att tillämpa en variant av _builder pattern_.  Detta är ett alternativ istället för att lägga in affärslogik i en _controller_ eller direkt i modellen. 
+
+Denna modulen gör om `IModelService` till en komplett _factory_ samt lägger till gränssnittet `IModelBuilder`.
+
+
+=== Konfiguration
+För att aktivera modulen behöver nedanstående konfiguration läggas till för att _dekorera_ den aktuella `IModelService`.
+
+[source, xml]
+----
+<boilerplate>
+    <model.service type="Boilerplate.Features.Core.Services.ModelService">
+      <decorators>
+        <add with="Boilerplate.Features.Mapper.Services.BuildModelService" />
+      </decorators>
+    </model.service>
+</boilerplate>
+----
+
+== Introduktion
+Denna sektionen ger en liten introduktion och förklaring till syftet att använda modulen och innehåller några exempel som kommer utgå från nedanstånde modeller.
+
+[source, C#]
+----
+public class SiteViewPage : PageData <1>
+{
+    public virtual string Title {get;set;}
+}
+----
+<1> Definiera en basklass som lägger till gemensamma egenskaper
+
+
+[source, C#]
+----
+[ContentType(...)] <1>
+public class NavigationPage : SiteViewPage <2>
+{
+    public virtual string Preamble {get;set;}
+}
+----
+<1> Definiera en ny innehållstyp i Episerver
+
+[source,C#]
+----
+public class NavigationPageModel : IModel
+{
+    public NavigationPageModel(NavigationPage currentPage)
+    {
+        Title = currentPage.Title;
+        Preamble = currentPage.Preamble;
+        
+        Items = new List<NavigationItem>();
+    }
+    
+    public string Title {get; set;}
+    
+    public string Preamble {get;set;}
+    
+    public List<NavigationItem> Items { get; set;}
+}
+----
+[source, C#]
+----
+public class NavigationItem : IModel
+{
+    public string Title {get; set;}
+    
+    public string Url {get; set;}
+}
+
+----
+
+=== Använda en controller
+En lösning för att bygga upp modellen är att implementera _affärslogiken_ i den aktuella `PageController` för innehållstypen. Vilket kan vara _good-enough_ när det rör sig om enklare implementationer. 
+
+Det är när systemet växer som man behöver vara beredd på att förändra upplägget för att tackla nya behov, till exempel utöka modellen med mer data eller kunna leverera modellen via en webbtjänst.
+
+NOTE: Detta kan vara en bra utgångspunkt när man är osäker och vill snabbt komma igång med något. När man sedan vet mer så förändrar man upplägget. Det viktiga är att man vet vad man ska ändra _till_.
+
+*Exempel* som visar en implementation i `PageController`.
+
+[source,C#]
+----
+
+public class NavigationPageController : PageController<NavigationPage>
+{
+    private readonly IContentLoader _loader;
+    
+    public NavigationPageController(IContentLoader loader)
+    {
+        _loader = loader;
+    }
+    
+    public ActionResult Index(NavigationPage currentPage)
+    {
+        var model =  new NavigationPageModel(currentPage); <1>
+        Build(currentPage, model); <2>
+        
+        return View(model);
+    }
+    
+    private void Build(NavigationPage content, NavigationPageModel model)
+    {
+        var children = loader.GetChildren<IContent>(page.ContentLink);
+        
+        foreach(var child in children) 
+        {
+            var navigationItem = CreateNavigationItem(child);
+            content.Items.Add(navigationItem);
+        }
+    }
+    
+    public NavigationItem CreateNavigationItem(IContent content) 
+    {
+        .....
+    }
+}
+
+----
+<1> Skapar en _NavigationPageModel_ med en _NavigationPage_
+<2> Bygger modellen men den _affärslogik_ som ska tillämpas
+
+
+Ovanstående exemel ansvara både för mappningen och skapa två typer av modeller `NavigationPageModel` och `NavigationItem`. Beroende på komplexitet för att skapa en `NavigationItem` så kan man fundera på om den implementationen ska ligga på samma plats som implementationen för `NavigationPageModel`.
+
+En annan variant är att bryta ut implementationen för att hämta _navigation items_ till en tjänst och sedan anropa den. Men _mappningen_ är kvar i controllern.
+
+*Exempel* som visar en implementation där affärslogiken för att hämta _navigation items_ ligger i en _tjänst_.
+
+[source,C#]
+----
+
+public class NavigationPageController : PageController<NavigationPage>
+{
+    private readonly INavigationService _service;
+    
+    public NavigationPageController(INavigationService service) <1>
+    {
+        _service = service;
+    }
+    
+    public ActionResult Index(NavigationPage currentPage)
+    {
+        var model =  new NavigationPageModel(currentPage)
+        {
+            NavigationItems = _service.GetNavigationItems(currentPage) <2>
+        };
+        
+        return View(model);
+    }
+}
+
+----
+<1> Flyttat ut affärslogiken till en egen _tjänst_ som hämtas in via _dependecy injection_
+<2> Hämtar _navigation items_ från tjänsten.
+
+=== Flytta över till en fabrik
+När behovet finns flyttar man sedan ut skapandet av en modell till en _factory_. Då ska man även sätta upp ett ett gränssnitt så att man i framtiden kan utöka eller ersätta implementationen.
+
+IMPORTANT: En _factory_ ska hantera *en* modell och inte flera olika modeller: *en* _factory_ per modell.
+
+
+*Exempel* där en `NavigationPageModelFactory` som  ansvara för _mappningen_ och använder `INavigationService` för att hämta alla _navigation items_.
+
+[source,C#]
+----
+public class NavigationPageModelFactory: INavigationPageModelFactory <1>
+{
+    private readonly INavigationService _service;
+    
+    public NavigationPageModelFactory(INavigationService service) <2>
+    {
+        _service = service;
+    }
+    
+    public NavigationPageModel CreateModel(NavigationPage page) 
+    {
+        var model =  new NavigationPageModel(currentPage)
+        {
+            NavigationItems = _service.GetNavigationItems(currentPage)
+        };
+        
+        return model;
+    }
+}
+
+----
+
+<1> Implementera även ett gränssnitt för att göra det enklare att i framtiden utöka eller ändra affärslogiken att nödvändigtviss påverka denna implementationen.
+<2> Tar in beroenden via _dependecy injection_.
+
+*Exempel* där en `PageController` använder fabriken.
+[source,C#]
+----
+
+public class NavigationPageController : PageController<NavigationPage>
+{
+    private readonly INavigationPageModelFactory _factory;
+    
+    public NavigationPageController(INavigationPageModelFactory factory)
+    {
+        _factory = factory;
+    }
+    
+    public ActionResult Index(SiteViewPage currentPage)
+    {
+        var model = factory.CreateNavigationPageModel(currentPage);
+        return View(model);
+    }
+}
+----
+
+=== Builders
+Introduktionen visade olika lösningar på hur man kan hantera förändringar när det gäller byggandet av modeller.
+
+Denna modulen lägger till stöd för att göra om `IModelService` till en _factory_ och kan då hantera byggandet av alla modeller.
+
+== Struktur
+** Models
+*** Pages
+**** NavigationPage.cs
+**** NavigationPageModel.cs
+**** NavigationPageModelBuilder.cs
+** Features
+**** Navigation
+***** NavigationItem.cs
+***** NavigationItemBuilder.cs
+
+*Exempel* på en `IModelBuilder` som implementera affärslogiken för en `NavigationPageModel`.
+
+[source,C#]
+----
+
+[BuilderFor(typeof(NavigationPageModel), typeof(NavigationPage))] <1>
+public class NavigationPageModelBuilder 
+    : ModelBuilder<NavigationPage, NavigationPageModel> <2>
+{
+    private readonly IContentLoader _loader;
+    private readonly IModelService _service;
+
+    public NavigationPageModelBuilder(IContentLoader loader, IModelService service) <3>
+    {
+        _loader = loader;
+        _service = service;
+    }
+
+    public override void Build(NavigationPage content, NavigationPageModel model) <4>
+    {
+        var children = loader.GetChildren<IContent>(page.ContentLink);
+        
+        foreach(var child in children) 
+        {
+            IModel navigationItem = service.CreateModel<NavigationItem>(child); <5>
+            content.Items.Add(navigationItem)
+        }
+    }
+}
+
+----
+
+<1> Registrerat en `IModelBuilder` för att bygga `NavigationPageModel` från en `NavigationPage`
+<2> Ärver från basklassen `ModelBuilder<>`
+<3> Använder _dependejy injection_ för att hämta in andra beroenden.
+<4> Affärslogiken för läsa alla _navigation items_
+<5> Använder `IModelService` för att skapa `NavigationItem` från ett innehåll.
+
+
+*Exempel* där en `PageController` använder fabriken.
+[source,C#]
+----
+
+[TemplateDescriptor(Inherited = true)] <1>
+public class DefaultPageController : PageController<PageData>
+{
+    private readonly IModelService _service;
+    
+    public NavigationPageController(IModelService service) <2>
+    {
+        _service = service;
+    }
+    
+    public ActionResult Index(SiteViewPage currentPage)
+    {
+        var model = _service.CreateModel(currentPage); <3>
+        return View(model);
+    }
+}
+----
+<1> Om modellen inte behöver någon direkt input kan man sätta upp en _default controller_ som fungera för flera _innehållstyper_.
+<2> Hämtar `IModelService` via _dependcy injection_.
+<3> Använder `IModelService` som en factory
+
+
+En `ModelBuilder` ansvara för att bygga upp modellens innehåll men ansvara inte för att skapa den, vilket är `IModelService` ansvar. En `ModelBuilder` anropas efter en `IModel` har skapats.
+
+== Byggkedja
+Det är möjligt att lägga in flera `IModelBuilder` som hantera samma modell men utför olika saker. Detta görs genom att helt enkelt lägga till en `IModelBuilder` med samma koppling.
+
+*Exempel* som lägger till en ny `IModelBuilder` för `NavigationPageModel`. Denna har en utökad affärslogik som laddar in extra _navigation items_ från den aktuella sidan, om det finns några.
+
+[source,C#]
+----
+
+[BuilderFor(typeof(NavigationPageModel), typeof(NavigationPage))] <1>
+public class LoadFromNavigationItemsWhenNavigationPageModel 
+    : ModelBuilder<NavigationPage, NavigationPageModel> <2>
+{
+    private readonly IContentLoader _loader;
+    private readonly IModelService _service;
+
+    public NavigationPageModelBuilder(IContentLoader loader, IModelService service) <3>
+    {
+        _loader = loader;
+        _service = service;
+    }
+
+    public override CanBuild(NavigationPage content, NavigationPageModel model) 
+    {
+        return content.NavigationITems != null && content.NavigationItems.Count > 0;
+    }
+
+    public override void Build(NavigationPage content, NavigationPageModel model)
+    {
+        var children = loader.GetChildren<IContent>(page.ContentLink);
+        
+        foreach(ContentAreaItem contentAreaItem in content.NavigationItems) 
+        {
+            IContent item = _loader.Get<IContent>(contentAreaItem);
+            IModel navigationItem = _service.CreateModel<NavigationItem>(child);
+            <5>
+            content.Items.Add(navigationItem)
+        }
+    }
+}
+
+----
+
+
+*Exempel* som visar hur man kan sätta upp beroenden mellan olika builders. Här kommer `LoadFromNavigationItemsWhenNavigationPageModel` att köras efter `NavigationPageModelBuilder`. Detta kan vara bra om man behöver någon information som en annan builder lägger till i modellen.
+
+[source,C#]
+----
+[BuilderFor(typeof(NavigationPageModel), typeof(NavigationPage))]
+public class NavigationPageModelBuilder 
+    : ModelBuilder<NavigationPage, NavigationPageModel>
+{
+    ...
+}
+
+[BuilderFor(
+    typeof(NavigationPageModel), 
+    typeof(NavigationPage), 
+    Dependency = typeof(NavigationPageModelBuilder)) <1>
+]
+public class LoadFromNavigationItemsWhenNavigationPageModel 
+    : ModelBuilder<NavigationPage, NavigationPageModel>
+{
+    ...
+}
+----
+<1> Sätter ett upp ett beroende till `NavigationPageModelBuilder`.
+
+Förutom att sätta ett direkt beroende till en annan builder går det med egenskapen `PositionInBuildSequence` styra om en builder ska köras före eller efter ett beroende. Det går även att ställa in om den ska köras först eller sist.
+
+=== Plats i byggkedjan
+Attributet `BuilderFor` har egenskapen `PositionInBuildSequence` som gör det möjligt att styra var i byggkedjan en `IModelBuilder` ska läggas.
+
+First:: Kommer köras först i byggkedjan 
+Last:: Kommer köras sists i byggkedjan
+Before:: Kommer köra före ett beroende
+After:: Kommer köras efter ett beroende
+
+NOTE: Om det finns flera `IModelBuilder` som har `First` eller `Last` så kommer dessa vara bland de sista eller första som körs. Det går inte att styra att en `IModelBuilder` ska vara _absolut_ sist eller först.
+
+== Avancerat
+
+=== Ändra om inkommande _content_
+Ibland finns det behov av att ändra inkommande innehåll _content_ som `IModelBuilder` ska hämta information i från. När man gör detta behöver man ha i åtanke att man inte exakt vad som har körts inna eller kommer köras efter.
+
+Det är då rekommenderat att man sätter upp ett beroende då kan man göra en någorlunda uppskattning var i kedjan den kommer köras.
+
+=== Ändra IModel
+Ibland kan man även behöva tillämpa någon typ av logik för att dynamiskt ändra  `IModel` via en `IModelBuilder`. Detta kan man göra genom att implementera `IChangeModel`
+
+[source,C#]
+----
+[BuilderFor(
+    typeof(NavigationPageModel), 
+    typeof(NavigationPage), 
+    PositionInBuildSequence = BuildSequencePosition.First <1>
+)]
+public class LoadFromNavigationItemsWhenNavigationPageModel 
+    : ModelBuilder<NavigationPage, NavigationPageModel>, IChangeModel
+{
+    public IModel ChangeModel {get;set;}
+    
+    public override Build(NavigationPage content, NavigationPageModel model) 
+    {
+        if(content) 
+        {
+            ChangeModel = new NavigationPageModel();
+        }
+    }
+}
+----
+<1> Placera `IModelBuilder` först i kedjan för att inte aktivera några andra `IModelBuilder`.
+
+
+NOTE: Risken med detta upplägget är att det kan bli svårt att förutse byggkedjan och det kan bli svårt för nya utvecklare att sätta sig in i projektet.
+
+
+Det är även möjligt att ändra `IModel` via en `IModelBuilder`. Detta görs genom att man implementera `IChangeModel`.
+
+
+== Builders
+_Builder pattern_ är ett _designmönster_ för att hantera objektskapande. 
+
+Fördelar:
+Blir enklare att introducera nya funktioner utan att behöva ändra modellen varje gång
+Använnder dependejy injection istället för att gå via Service locator, vilket kan göra det tydligare beroenden en klass har.
+
+Men service locator s framgår det inte via gränssnittet vilka beroenden som finns.
+
+Konsekvens
+    Koden kan bli lite mer utspridd och det kan vara svårt att hitta alla builders som bygger en viss model.
+
+_Builders_ öppnar
+
+=== Med en builder
+Om man skulle översätta ovanstående till en modelbuilder skulle det bli enligt nedan.
+
+Förutom att sätta upp enskila _builders_ kan man bygga upp en kedja av _buildes_ som jobbar med samma modell men ändrar olika delar av modellen. Modulen lägger till en flexibilitet i att man kan utöka en byggkedja utan att nödvändigtviss ändra befintlig kod.
+
+Skillnad mellan `IModelBuilder` och `IQuery` är att en `IModelQuery` inte tar någon direkt _input_. All information plockas in via _konstruktorn_ eller finns tillgänglig på modellen.
+
+TIP: Om det är en ModelBuilder till ett innehåll och inte kopplat till någon 
+== Konfiguration
+För att aktivera `Mapper` behöver man lägga in en konfiguration i _Web.config_ för att dekorera IModelService.
+
+
