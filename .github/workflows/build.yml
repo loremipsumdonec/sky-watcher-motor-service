@@ -1,0 +1,62 @@
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      configuration:
+        required: true
+        type: string
+      architecture:
+        required: true
+        type: string
+      platform:
+        required: true
+        type: string
+    secrets:
+      dockerhub_username:
+        required: true
+      dockerhub_password:
+        required: true
+    
+jobs:
+  build_service:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+      name: checkout
+
+    - name: set up QEMU
+      uses: docker/setup-qemu-action@master
+      with:
+        platforms: ${{ inputs.platform }}
+
+    - name: setup .NET
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: 6.0.x
+
+    - name: build service
+      run: dotnet build ./src/SkyWatcherMotorService/SkyWatcherMotorService.csproj -a ${{ inputs.architecture }} -c ${{ inputs.configuration }} -o out
+
+    - name: login to docker hub
+      uses: docker/login-action@v1 
+      with:
+        username: ${{ secrets.dockerhub_username }}
+        password: ${{ secrets.dockerhub_password }}
+
+    - name: copy dockerfile
+      run: cp ./src/SkyWatcherMotorService/Dockerfile ./Dockerfile
+
+    - name: list files
+      run: ls -l
+
+    - name: build and publish image
+      id: docker_build
+      uses: docker/build-push-action@v2
+      with:
+        platforms: ${{ inputs.platform }}
+        context: .
+        push: true
+        tags: loremdonecipsum/sky-watcher-motor-service:${{ inputs.architecture }}-alpha

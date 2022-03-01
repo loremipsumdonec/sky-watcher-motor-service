@@ -1,0 +1,57 @@
+name: publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    paths:
+      - "src/SkyWatcherMotorService/**.*"
+      - "src/Boilerplate/**.*"
+jobs:
+
+  linux_arm:
+    uses: loremipsumdonec/sky-watcher-motor-service/.github/workflows/build.yml@master
+    with:
+      configuration: Release
+      architecture: arm
+      platform: linux/arm
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  linux_arm64:
+    uses: loremipsumdonec/sky-watcher-motor-service/.github/workflows/build.yml@master
+    with:
+      configuration: Release
+      architecture: arm64
+      platform: linux/arm64
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  linux_x64:
+    uses: loremipsumdonec/sky-watcher-motor-service/.github/workflows/build.yml@master
+    with:
+      configuration: Release
+      architecture: x64
+      platform: linux/amd64
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  manifest:
+    needs: [linux_arm, linux_arm64, linux_x64]
+    runs-on: ubuntu-latest
+
+    steps: 
+
+    - name: login to docker hub
+      uses: docker/login-action@v1 
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: build manifest
+      run: | 
+        docker manifest create loremdonecipsum/sky-watcher-motor-service:alpha --amend loremdonecipsum/sky-watcher-motor-service:x64-alpha --amend loremdonecipsum/sky-watcher-motor-service:arm64-alpha --amend loremdonecipsum/sky-watcher-motor-service:arm-alpha
+        docker manifest push loremdonecipsum/sky-watcher-motor-service:alpha
